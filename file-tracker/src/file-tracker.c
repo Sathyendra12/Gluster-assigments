@@ -16,13 +16,6 @@
 
 #include "file-tracker.h"
 
-/*
- * This is a ft ``encryption'' xlator. It ft's data when
- * writing to disk and ft's it back when reading it.
- * This xlator is meant as an example, NOT FOR PRODUCTION
- * USE ;) (hence no error-checking)
- */
-
 
 int32_t
 ft_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
@@ -32,19 +25,18 @@ ft_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                 dict_t *xdata) {
         
         ft_private_t *priv = NULL;
-        priv = GF_CALLOC (sizeof (ft_private_t), 1, 0);
-        priv = this->private ;
+        priv = this->private;
 
+        if (op_ret != -1) {
+                char **f_loc = (char **) frame->local;
+                fprintf (priv->file , "%s\n" , f_loc[0]);
+                GF_FREE (frame->local);
+        }
         gf_log ("file-tracker", GF_LOG_ERROR,
-                        "\n\n---------\n\nHello In Create Back\n\n-----------\n\n");
+                        "\n\n---------\nHello In Create Back\n-----------\n\n");
         STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode,
                              stbuf,preparent, postparent, xdata);
-                             
-                             
-        fclose(priv->file);
-        gf_log ("file-tracker", GF_LOG_ERROR,
-                        "\n\n------------\n\nFile Closed\n\n--------------\n\n");
-                             
+        
         return 0;
 }
 
@@ -54,16 +46,11 @@ ft_create(call_frame_t *frame, xlator_t *this,
             mode_t umask, fd_t *fd, dict_t *xdata) {
         gf_log ("file-tracker", GF_LOG_ERROR,
                         "\n\n------------\n\nHello In Create\n\n--------------\n\n");
-        ft_private_t *priv = NULL;
-        priv = GF_CALLOC (sizeof (ft_private_t), 1, 0);
-        FILE *p_fd = fopen ("/file_track_log.txt" , "a");
-        
-        fprintf (p_fd,"%s\n",loc->path);
-        
-        priv->file = p_fd;
-        
-        this->private = priv;
-        gf_log ("New Rot",GF_LOG_ERROR,"\n\n\n%s\n\n\n",loc->path);
+        char **f_loc = NULL;
+
+        gf_asprintf (f_loc , loc->path);
+        frame->local = f_loc;
+
         STACK_WIND (frame, ft_create_cbk, FIRST_CHILD (this),
                     FIRST_CHILD (this)->fops->create,
                     loc, flags, mode, umask, fd, xdata);
@@ -73,11 +60,14 @@ ft_create(call_frame_t *frame, xlator_t *this,
 int32_t
 init (xlator_t *this)
 {
-    
         ft_private_t *priv = NULL;
 
+        FILE *fptr = fopen ("/file_track_log.txt" , "a");
+        priv = GF_CALLOC (sizeof (ft_private_t), 1, 0);
+        priv->file = fptr;
+        this->private = priv;
         gf_log ("file-tracker", GF_LOG_ERROR,
-                        "\n---------------------\n\n Initializing\n\n---------------------\n");
+                "\n------------------\n\nInitializing\n\n------------------\n");
 
         if (!this->children || this->children->next) {
                 gf_log ("file-tracker", GF_LOG_ERROR,
@@ -106,6 +96,9 @@ fini (xlator_t *this)
 
         if (!priv)
                 return;
+        fclose (priv->file);
+        gf_log ("file-tracker", GF_LOG_ERROR,
+                        "\n\n------------\n\nFile Closed\n\n-------------\n\n");
         this->private = NULL;
         GF_FREE (priv);
 
