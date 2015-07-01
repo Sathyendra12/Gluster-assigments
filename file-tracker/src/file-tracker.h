@@ -7,13 +7,11 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef __ROT_13_H__
-#define __ROT_13_H__
+#ifndef __FT_H__
+#define __FT_H__
 
 typedef struct {
-        gf_boolean_t encrypt_write;
-        gf_boolean_t decrypt_read;
         FILE *file;
-} rot_13_private_t;
+} ft_private_t;
 
-#endif /* __ROT_13_H__ */
+#endif 
