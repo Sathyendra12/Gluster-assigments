@@ -1,0 +1,129 @@
+volume test-ft-posix
+    type storage/posix
+    option volume-id 2c7eebf2-74b9-4453-a083-06d79ad0668e
+    option directory /brick/test-ft
+end-volume
+
+volume test-ft-trash
+    type features/trash
+    option trash-internal-op off
+    option brick-path /brick/test-ft
+    option trash-dir .trashcan
+    subvolumes test-ft-posix
+end-volume
+
+volume test-ft-file-tracker
+    type features/file-tracker
+    subvolumes test-ft-trash
+end-volume
+
+
+volume test-ft-changetimerecorder
+    type features/changetimerecorder
+    option record-counters off
+    option ctr-enabled off
+    option record-entry on
+    option ctr_link_consistency off
+    option record-exit off
+    option db-path /brick/test-ft/.glusterfs/
+    option db-name test-ft.db
+    option hot-brick off
+    option db-type sqlite3
+    subvolumes test-ft-file-tracker
+end-volume
+
+volume test-ft-changelog
+    type features/changelog
+    option changelog-barrier-timeout 120
+    option changelog-dir /brick/test-ft/.glusterfs/changelogs
+    option changelog-brick /brick/test-ft
+    subvolumes test-ft-changetimerecorder
+end-volume
+
+volume test-ft-bitrot-stub
+    type features/bitrot-stub
+    option export /brick/test-ft
+    subvolumes test-ft-changelog
+end-volume
+
+volume test-ft-access-control
+    type features/access-control
+    subvolumes test-ft-bitrot-stub
+end-volume
+
+volume test-ft-locks
+    type features/locks
+    subvolumes test-ft-access-control
+end-volume
+
+volume test-ft-upcall
+    type features/upcall
+    option cache-invalidation off
+    subvolumes test-ft-locks
+end-volume
+
+volume test-ft-io-threads
+    type performance/io-threads
+    subvolumes test-ft-upcall
+end-volume
+
+volume test-ft-barrier
+    type features/barrier
+    option barrier-timeout 120
+    option barrier disable
+    subvolumes test-ft-io-threads
+end-volume
+
+volume test-ft-index
+    type features/index
+    option index-base /brick/test-ft/.glusterfs/indices
+    subvolumes test-ft-barrier
+end-volume
+
+volume test-ft-marker
+    type features/marker
+    option inode-quota off
+    option quota off
+    option gsync-force-xtime off
+    option xtime off
+    option timestamp-file /var/lib/glusterd/vols/test-ft/marker.tstamp
+    option volume-uuid 2c7eebf2-74b9-4453-a083-06d79ad0668e
+    subvolumes test-ft-index
+end-volume
+
+volume test-ft-quota
+    type features/quota
+    option deem-statfs off
+    option timeout 0
+    option server-quota off
+    option volume-uuid test-ft
+    subvolumes test-ft-marker
+end-volume
+
+volume test-ft-worm
+    type features/worm
+    option worm off
+    subvolumes test-ft-quota
+end-volume
+
+volume test-ft-read-only
+    type features/read-only
+    option read-only off
+    subvolumes test-ft-worm
+end-volume
+
+volume /brick/test-ft
+    type debug/io-stats
+    option count-fop-hits off
+    option latency-measurement off
+    subvolumes test-ft-read-only
+end-volume
+
+volume test-ft-server
+    type protocol/server
+    option auth.addr./brick/test-ft.allow *
+    option auth.login.7239642a-f27e-4ae1-8677-160a1c4a81f6.password 14f34df2-719a-49e0-bc33-754baf58fa38
+    option auth.login./brick/test-ft.allow 7239642a-f27e-4ae1-8677-160a1c4a81f6
+    option transport-type tcp
+    subvolumes /brick/test-ft
+end-volume
