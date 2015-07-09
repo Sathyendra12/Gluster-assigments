@@ -4,8 +4,22 @@
 #include "glusterfs.h"
 #include "xlator.h"
 #include "logging.h"
+#include "defaults.h"
+#include "iatt.h"
 
 #include "file-tracker.h"
+
+int32_t
+ft_setxattr (call_frame_t *frame, xlator_t *this,
+                         fd_t *fd, dict_t *dict, int flags, dict_t *xdata)
+{
+        STACK_WIND (frame, default_setxattr_cbk,
+                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetxattr, fd,
+                    dict, flags, xdata);
+
+        dict_unref (xdata);
+        return 0;
+}
 
 /* Function to track file creation */
 int32_t
@@ -14,6 +28,12 @@ ft_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                 fd_t *fd, inode_t *inode, struct iatt *stbuf,
                 struct iatt *preparent, struct iatt *postparent,
                 dict_t *xdata) {
+
+        int ret = -1;
+        uint64_t atime = stbuf->ia_atime;
+        uint64_t mtime = stbuf->ia_mtime;
+        uint64_t ctime = stbuf->ia_ctime;
+        dict_t *dict = NULL;
 
         gf_log ("file-tracker" , GF_LOG_ERROR ,
                 "\n\n---------\nIn Create Cbk\n-----------\n\n");
@@ -28,8 +48,41 @@ ft_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                         "\nFile Entry = %s\n" , file_entry);
                 fprintf (priv->file , "%s\n" , file_entry);
                 fflush (priv->file);
+
+                if (!xdata) 
+                        xdata = dict_new ();
+                        if (!xdata)
+                                goto cont_op;
+                /*} else {
+                        dict_ref (xdata);
+                }*/
+                gf_log ("file-tracker" , GF_LOG_ERROR ,
+                        "\n\n---------PRE ATIME: \n-----------\n\n");
+                ret = dict_set_int64 (xdata, "trusted.gf_atime", atime);
+                /*gf_log ("file-tracker" , GF_LOG_ERROR ,
+                "\n\n---------ATIME: %" PRIu64 "\n-----------\n\n",atime);*/
+                if (ret)
+                        goto unref_dict;
+                ret = dict_set_int64 (xdata, "trusted.gf_mtime", mtime);
+                if (ret)
+                        goto unref_dict;
+                ret = dict_set_int64 (xdata, "trusted.gf_ctime", ctime);
+                if (ret)
+                        goto unref_dict;
+
+                ret = ft_setxattr (frame, this,
+                        fd, dict, 0, xdata);
+                if (ret)
+                        gf_log ("file-tracker" , GF_LOG_ERROR ,
+                                "\n\nError in creating xattr\n\n");
+
+                goto cont_op;
         }
 
+unref_dict:
+        dict_unref (xdata);
+
+cont_op:
         STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode,
                         stbuf, preparent, postparent, xdata);
         __gf_free (file_entry);
