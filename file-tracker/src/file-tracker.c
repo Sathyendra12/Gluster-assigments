@@ -1,25 +1,35 @@
-#include <ctype.h>
-#include <sys/uio.h>
-
-#include "glusterfs.h"
-#include "xlator.h"
-#include "logging.h"
-#include "defaults.h"
-#include "iatt.h"
-
 #include "file-tracker.h"
 
-int32_t
-ft_setxattr (call_frame_t *frame, xlator_t *this,
-                         fd_t *fd, dict_t *dict, int flags, dict_t *xdata)
-{
-        STACK_WIND (frame, default_setxattr_cbk,
-                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetxattr, fd,
-                    dict, flags, xdata);
 
-        dict_unref (xdata);
-        return 0;
+int32_t
+ft_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                  int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+
+       ft_local_create_t *ft_local_create = NULL;
+       
+       GF_ASSERT (frame);
+       GF_ASSERT (frame->local);
+
+       ft_local_create = (ft_local_create_t*) frame->local;
+
+       STACK_UNWIND_STRICT (create, frame,
+                             ft_local_create->op_ret,
+                             ft_local_create->op_errno,
+                             ft_local_create->fd,
+                             ft_local_create->inode,
+                             ft_local_create->stbuf,
+                             ft_local_create->preparent,
+                             ft_local_create->postparent,
+                             xdata);
+
+       frame->local = NULL;
+
+       return 0;
 }
+
+
+
 
 /* Function to track file creation */
 int32_t
@@ -30,62 +40,82 @@ ft_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                 dict_t *xdata) {
 
         int ret = -1;
-        uint64_t atime = stbuf->ia_atime;
-        uint64_t mtime = stbuf->ia_mtime;
-        uint64_t ctime = stbuf->ia_ctime;
+        uint64_t atime = 0;
         dict_t *dict = NULL;
-
-        gf_log ("file-tracker" , GF_LOG_ERROR ,
-                "\n\n---------\nIn Create Cbk\n-----------\n\n");
-
         ft_private_t *priv = NULL;
-        char *file_entry = NULL;
+        ft_local_create_t *ft_local_create = NULL;
 
-        priv = this->private;
-        if(op_ret != -1) {
-                file_entry = (char *)frame->local;
-                gf_log ("file-tracker" , GF_LOG_ERROR,
-                        "\nFile Entry = %s\n" , file_entry);
-                fprintf (priv->file , "%s\n" , file_entry);
-                fflush (priv->file);
+        GF_ASSERT (frame);
+        GF_ASSERT (this);
+        GF_ASSERT (this->private);
+        GF_ASSERT (stbuf);
 
-                if (!xdata) 
-                        xdata = dict_new ();
-                        if (!xdata)
-                                goto cont_op;
-                /*} else {
-                        dict_ref (xdata);
-                }*/
-                gf_log ("file-tracker" , GF_LOG_ERROR ,
-                        "\n\n---------PRE ATIME: \n-----------\n\n");
-                ret = dict_set_int64 (xdata, "trusted.gf_atime", atime);
-                /*gf_log ("file-tracker" , GF_LOG_ERROR ,
-                "\n\n---------ATIME: %" PRIu64 "\n-----------\n\n",atime);*/
-                if (ret)
-                        goto unref_dict;
-                ret = dict_set_int64 (xdata, "trusted.gf_mtime", mtime);
-                if (ret)
-                        goto unref_dict;
-                ret = dict_set_int64 (xdata, "trusted.gf_ctime", ctime);
-                if (ret)
-                        goto unref_dict;
-
-                ret = ft_setxattr (frame, this,
-                        fd, dict, 0, xdata);
-                if (ret)
-                        gf_log ("file-tracker" , GF_LOG_ERROR ,
-                                "\n\nError in creating xattr\n\n");
-
-                goto cont_op;
+        /* If frame->local is null do nothing*/
+        if (!frame->local) {
+               goto error;		
         }
 
-unref_dict:
-        dict_unref (xdata);
+        /*If create has failed then nothing to do*/
+        if (op_ret == -1) {
+               goto error;
+        }
 
-cont_op:
+
+        ft_local_create = (ft_local_create_t*) frame->local;
+
+        /*Copy atime of the inode */
+        atime = stbuf->ia_atime;
+
+       /*writing file name to db file*/
+        priv = this->private;        
+        if (!ft_local_create->file_path) {
+                goto error;
+        }
+        fprintf (priv->file , "%s\n" , ft_local_create->file_path);
+        fflush (priv->file);
+
+
+        /*Saving current create fop's context on to frame->local*/
+        ft_local_create->op_ret = op_ret;
+        ft_local_create->op_errno = op_errno;
+        ft_local_create->fd = fd;
+        ft_local_create->inode = inode;
+        ft_local_create->stbuf = stbuf;
+        ft_local_create->preparent = preparent;
+        ft_local_create->postparent = postparent;
+
+
+        /*Setting atime of the file to xattr*/
+        dict = dict_new ();
+        if (!dict) {
+              goto error;
+        }
+        
+        ret = dict_set_int64 (dict, "trusted.gf_atime", atime);
+        if (ret) {
+               gf_log (this->name , GF_LOG_ERROR , "Failed setting atime!");
+               goto error;
+        }
+
+        STACK_WIND (frame, ft_setxattr_cbk,
+                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetxattr, fd,
+                    dict, 0, xdata);
+
+        goto out;
+error:
         STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode,
                         stbuf, preparent, postparent, xdata);
-        __gf_free (file_entry);
+out:
+
+        if (dict)
+            dict_unref (dict); 
+
+        if (ft_local_create) {
+                GF_FREE (ft_local_create->file_path);
+                GF_FREE (ft_local_create);
+        }
+
+        frame->local = NULL;
 
         return 0;
 }
@@ -95,15 +125,33 @@ ft_create(call_frame_t *frame, xlator_t *this,
             loc_t *loc, int32_t flags, mode_t mode,
             mode_t umask, fd_t *fd, dict_t *xdata) {
 
-        char *file_entry = NULL;
+        int ret = -1;
+        ft_local_create_t *ft_local_create = NULL;
 
-        gf_log ("file-tracker" , GF_LOG_ERROR,
-                "\n\n------------\n\nIn Create\n\n--------------\n\n");
+        ft_local_create = GF_CALLOC (1, sizeof (ft_local_create_t), gf_ft_mt_local_create_t);
+        if (!ft_local_create) {
 
-        gf_asprintf(&file_entry , loc->path);
-        gf_log ("file-tracker" , GF_LOG_ERROR , "\nf_loc = %s\n\n" , file_entry);
+               gf_log (this->name , GF_LOG_ERROR , "failed init of local of create fop!");
+               goto error;
 
-        frame->local = file_entry;
+        }
+
+        ret = gf_asprintf(&ft_local_create->file_path, loc->path);
+        if (ret == -1) {
+                 gf_log (this->name , GF_LOG_ERROR , "failed init of file path");
+                 goto error;        
+        }
+
+
+        ret = 0;
+        goto out;
+
+error:
+        if (ft_local_create)
+                GF_FREE (ft_local_create->file_path);
+        GF_FREE (ft_local_create);
+out:
+        frame->local = ft_local_create;
 
         STACK_WIND (frame, ft_create_cbk, FIRST_CHILD (this),
                     FIRST_CHILD (this)->fops->create,
@@ -116,11 +164,11 @@ init (xlator_t *this)
 {
         ft_private_t *priv = NULL;
 
-        gf_log ("file-tracker" , GF_LOG_ERROR ,
+        gf_log (this->name , GF_LOG_ERROR ,
                 "\n---------------\nIn Init\n---------------\n");
 
         if (!this->children || this->children->next) {
-                gf_log ("file-tracker" , GF_LOG_ERROR ,
+                gf_log (this->name , GF_LOG_ERROR ,
                         "FATAL: file-tracker should have exactly one child");
                 return -1;
         }
@@ -130,7 +178,7 @@ init (xlator_t *this)
                         "dangling volume. check volfile ");
         }
 
-        priv = __gf_calloc (sizeof (ft_private_t) , 1 , 0 , "0");
+        priv =  GF_CALLOC (1, sizeof (ft_private_t), gf_ft_mt_private_t);
         if (!priv)
                 return -1;
 
@@ -139,9 +187,28 @@ init (xlator_t *this)
         priv->file = log_fptr;
         this->private = priv;
 
-        gf_log ("file-tracker" , GF_LOG_DEBUG , "file-tracker xlator loaded");
+        gf_log (this->name , GF_LOG_DEBUG , "file-tracker xlator loaded");
         return 0;
 }
+
+
+int32_t
+mem_acct_init (xlator_t *this)
+{
+        int     ret = -1;
+
+        GF_VALIDATE_OR_GOTO ("ctr", this, out);
+
+        ret = xlator_mem_acct_init (this, gf_ft_mt_end + 1);
+
+        if (ret != 0) {
+                gf_log (this->name , GF_LOG_ERROR , "Memory accounting init failed");
+                return ret;
+        }
+out:
+        return ret;
+}
+
 
 void
 fini (xlator_t *this)
@@ -150,14 +217,15 @@ fini (xlator_t *this)
 
         priv = this->private ;
 
-        gf_log ("file-tracker" , GF_LOG_ERROR ,
-                        "\n\n------------\nFile Closed\n--------------\n\n");
+        gf_log (this->name, GF_LOG_ERROR ,
+                      "\n\n------------\nFile Closed\n--------------\n\n");
 
         if (!priv)
                 return;
         fclose (priv->file);
+        
         this->private = NULL;
-        __gf_free (priv);
+        GF_FREE (priv);
 
         return;
 }
