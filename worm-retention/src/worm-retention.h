@@ -10,11 +10,16 @@
 #include "defaults.h"
 #include "iatt.h"
 #include "wr-mem-types.h"
+#include "syncop.h"
 
 /* Translator Private Data */
 typedef struct {
         FILE *file;
 } wr_private_t;
+
+typedef struct _wr_in_create {
+        int crt_flag;
+} wr_in_create_t;
 
 typedef struct _wr_local_create{
         int op_ret;

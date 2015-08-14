@@ -1,22 +1,37 @@
 #include "worm-retention.h"
 
 int32_t
-wr_writev_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                      int32_t op_ret, int32_t op_errno, dict_t *dict,
-                      dict_t *xdata)
+wr_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
+            struct iatt *stbuf, int32_t valid, dict_t *xdata)
 {
+        gf_log (this->name , GF_LOG_ERROR , "\n\n\nIN SETATTR\n\n\n");
         int ret = -1;
         char *name;
+        int32_t op_ret = -1, op_errno = -1;
         uint8_t worm_state = 0;
-        wr_local_writev_t *wr_local_writev = NULL;
+        dict_t *dict = dict_new();
+        wr_in_create_t *crt_st = (wr_in_create_t *) frame->local;
+
+        if (crt_st->crt_flag == 1)
+                goto out;
 
         ret = gf_asprintf(&name, "trusted.worm_state");
         if (ret <= 0) {
                gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state key!");
                goto error;
         }
+        ret = syncop_getxattr (this, loc, &dict,
+                                       name, NULL, NULL);
+        gf_log (this->name , GF_LOG_ERROR , "\n\nRET: %d\n\n",ret);
+        if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, 0, "ERROR"
+                                " in determining xattr of the file\n\n");
+                        ret = -1;
+                        goto error;
+        }
 
         int8_t worm_state_signed = 0;
+
         ret = dict_get_int8 (dict , name , &worm_state_signed);
         worm_state = (uint8_t) worm_state_signed;
 
@@ -34,21 +49,139 @@ wr_writev_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto error;
         }
 
-        wr_local_writev = (wr_local_writev_t *) frame->local;
-        STACK_WIND (frame,
-                            default_writev_cbk,
-                            FIRST_CHILD(this),
-                            FIRST_CHILD(this)->fops->writev,
-                             wr_local_writev->fd,
-                             wr_local_writev->vector,
-                             wr_local_writev->count,
-                             wr_local_writev->off,
-                             wr_local_writev->flags,
-                             wr_local_writev->iobref,
-                             xdata);
+        goto out;
 error:
-        STACK_UNWIND_STRICT (writev, frame, -1, op_errno, NULL, NULL,
-                                     NULL);
+        STACK_UNWIND_STRICT (setattr, frame, op_ret, op_errno, NULL,
+                             NULL, xdata);
+        goto ret_out;
+out:
+        STACK_WIND (frame,
+                            default_setattr_cbk,
+                            FIRST_CHILD (this),
+                            FIRST_CHILD (this)->fops->setattr,
+                            loc, stbuf, valid, xdata);
+ret_out:
+        return ret;
+}
+
+int32_t
+wr_fsetxattr (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *dict,
+              int32_t flags, dict_t *xdata)
+{
+        gf_log (this->name , GF_LOG_ERROR , "\n\n\nIN F SETXATTR\n\n\n");
+        int ret = -1;
+        char *name;
+        int32_t op_ret = -1, op_errno = -1;
+        uint8_t worm_state = 0;
+        wr_in_create_t *crt_st = (wr_in_create_t *) frame->local;
+
+        if (crt_st->crt_flag == 1)
+                goto out;
+        ret = gf_asprintf(&name, "trusted.worm_state");
+        if (ret <= 0) {
+               gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state key!");
+               goto error;
+        }
+        ret = syncop_fgetxattr (this, fd, &dict,
+                                       name, NULL, NULL);
+        if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, 0, "ERROR"
+                                "in determining xattr of the file\n\n");
+                        ret = -1;
+                        goto error;
+        }
+
+        int8_t worm_state_signed = 0;
+
+        ret = dict_get_int8 (dict , name , &worm_state_signed);
+        worm_state = (uint8_t) worm_state_signed;
+
+        if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Retained!");
+        else if ((worm_state>>6) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is a Worm!");
+        else if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Held!");
+        else
+                ret = 0;
+
+        if (ret != 0) {
+                op_errno = -30;
+                goto error;
+        }
+
+        goto out;
+error:
+        STACK_UNWIND_STRICT (fsetxattr, frame, op_ret, op_errno, xdata);
+        goto ret_out;
+out:
+        STACK_WIND (frame, default_fsetxattr_cbk,
+                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetxattr, fd,
+                    dict, 0, xdata);
+ret_out:
+        return ret;
+}
+
+
+int32_t
+wr_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *dict,
+             int32_t flags, dict_t *xdata)
+{
+        gf_log (this->name , GF_LOG_ERROR , "\n\nIN SETXATTR\n\n");
+        int ret = -1;
+        char *name;
+        int32_t op_ret = -1, op_errno = -1;
+        uint8_t worm_state = 0;
+        wr_in_create_t *crt_st = (wr_in_create_t *) frame->local;
+
+        if (crt_st->crt_flag == 1)
+                goto out;
+
+        ret = gf_asprintf(&name, "trusted.worm_state");
+        if (ret <= 0) {
+               gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state key!");
+               goto error;
+        }
+        ret = syncop_getxattr (this, loc, &dict,
+                                       name, NULL, NULL);
+        if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, 0, "ERROR"
+                                "in determining xattr of the file\n\n");
+                        ret = -1;
+                        goto error;
+        }
+
+        int8_t worm_state_signed = 0;
+
+        ret = dict_get_int8 (dict , name , &worm_state_signed);
+        worm_state = (uint8_t) worm_state_signed;
+
+        if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Retained!");
+        else if ((worm_state>>6) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is a Worm!");
+        else if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Held!");
+        else
+                ret = 0;
+
+        if (ret != 0) {
+                op_errno = -30;
+                goto error;
+        }
+
+        goto out;
+
+error:
+        STACK_UNWIND_STRICT (setxattr, frame, op_ret, op_errno, xdata);
+        goto ret_out;
+out:
+        STACK_WIND (frame,
+                        default_setxattr_cbk,
+                        FIRST_CHILD(this),
+                        FIRST_CHILD(this)->fops->setxattr,
+                        loc, dict, flags, xdata);
+ret_out:
         return ret;
 }
 
@@ -60,124 +193,60 @@ wr_writev (call_frame_t *frame, xlator_t *this, fd_t *fd, struct iovec *vector,
 {
         gf_log (this->name , GF_LOG_ERROR , "\n\n--\nIN WR WRITEV\n--\n\n");
         int ret = -1;
-        wr_local_writev_t *wr_local_writev = NULL;
-
-        wr_local_writev = GF_CALLOC (1, sizeof (wr_local_writev_t), gf_wr_mt_local_create_t);
-        if (!wr_local_writev) {
-
-               gf_log (this->name , GF_LOG_ERROR ,
-                                        "failed init of local of writev fop!");
-               goto error;
-        }
-
         char *name;
-
-        ret = gf_asprintf(&name, "trusted.worm_state");
-        if (ret <= 0) {
-               gf_log (this->name , GF_LOG_ERROR ,
-                                        "Failed setting worm_state key!");
-               goto error;
-        }
-
-        wr_local_writev->fd = fd;
-        wr_local_writev->vector = vector;
-        wr_local_writev->count = count;
-        wr_local_writev->off = off;
-        wr_local_writev->flags = flags;
-        wr_local_writev->iobref = iobref;
-
-        ret = 0;
-        goto out;
-
-error:
-        if (wr_local_writev)
-                GF_FREE (wr_local_writev);
-        wr_local_writev = NULL;
-
-out:
-        frame->local = wr_local_writev;
-
-        STACK_WIND (frame, wr_writev_getxattr_cbk, FIRST_CHILD(this),
-                    FIRST_CHILD(this)->fops->fgetxattr, fd, name, xdata);
-        return ret;
-}
-
-int32_t
-wr_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                      int32_t op_ret, int32_t op_errno, dict_t *dict,
-                      dict_t *xdata)
-{
-        int ret = -1;
+        int32_t op_ret = -1, op_errno = -1;
         uint8_t worm_state = 0;
-        wr_local_create_t *wr_local_create = NULL;
-        char *name;
+        dict_t *dict = dict_new ();
+        wr_in_create_t *crt_st = (wr_in_create_t *) frame->local;
 
-        wr_local_create = (wr_local_create_t*) frame->local;
+        if (crt_st->crt_flag == 1)
+                goto out;
         ret = gf_asprintf(&name, "trusted.worm_state");
         if (ret <= 0) {
                gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state key!");
                goto error;
+        }
+        ret = syncop_fgetxattr (this, fd, &dict,
+                                       name, NULL, NULL);
+        if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, 0, "ERROR"
+                                "in determining xattr of the file\n\n");
+                        ret = -1;
+                        goto error;
         }
 
         int8_t worm_state_signed = 0;
 
         ret = dict_get_int8 (dict , name , &worm_state_signed);
         worm_state = (uint8_t) worm_state_signed;
-        gf_log (this->name , GF_LOG_ERROR ,
-                        "\n\n---\nWORM STATE: %" PRId8 "\n---\n\n", worm_state);
-        ret = 0;
-error:
-        STACK_UNWIND_STRICT (create, frame,
-                             wr_local_create->op_ret,
-                             wr_local_create->op_errno,
-                             wr_local_create->fd,
-                             wr_local_create->inode,
-                             wr_local_create->stbuf,
-                             wr_local_create->preparent,
-                             wr_local_create->postparent,
-                             xdata);
 
-       return ret;
-}
+        if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Retained!");
+        else if ((worm_state>>6) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is a Worm!");
+        else if ((worm_state>>7) & 1) 
+                gf_log (this->name , GF_LOG_ERROR , "Write Failed. File is Worm-Held!");
+        else
+                ret = 0;
 
-int32_t
-wr_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                  int32_t op_ret, int32_t op_errno, dict_t *xdata)
-{
-        int ret = -1;
-        wr_local_create_t *wr_local_create = NULL;
-
-        wr_local_create = (wr_local_create_t*) frame->local;
-        GF_ASSERT (frame);
-        GF_ASSERT (frame->local);
-
-        char *name;
-
-        ret = gf_asprintf(&name, "trusted.worm_state");
-        if (ret <= 0) {
-               gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state key!");
-               goto error;
+        if (ret != 0) {
+                op_errno = -30;
+                goto error;
         }
 
-        STACK_WIND (frame, wr_getxattr_cbk, FIRST_CHILD(this),
-                    FIRST_CHILD(this)->fops->fgetxattr, wr_local_create->fd, name, xdata);
-        ret = 0;
         goto out;
 error:
-        STACK_UNWIND_STRICT (create, frame,
-                             wr_local_create->op_ret,
-                             wr_local_create->op_errno,
-                             wr_local_create->fd,
-                             wr_local_create->inode,
-                             wr_local_create->stbuf,
-                             wr_local_create->preparent,
-                             wr_local_create->postparent,
-                             xdata);
+        STACK_UNWIND_STRICT (writev, frame, op_ret, op_errno, NULL, NULL, xdata);
+        goto ret_out;
 out:
-       return ret;
+        STACK_WIND (frame, default_writev_cbk,
+                        FIRST_CHILD(this),
+                        FIRST_CHILD(this)->fops->writev, fd, vector,
+                        count, off, flags, iobref, xdata);
+ret_out:
+        return ret;
 }
 
-/* Function to add worm state attribute */
 int32_t
 wr_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                 int op_ret, int op_errno,
@@ -186,66 +255,45 @@ wr_create_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
                 dict_t *xdata) {
 
         int ret = -1;
-        uint8_t worm_state = 4;
+        uint8_t worm_state = 0;
         dict_t *dict = NULL;
-        wr_local_create_t *wr_local_create = NULL;
 
-        GF_ASSERT (frame);
         GF_ASSERT (this);
         GF_ASSERT (stbuf);
 
-        /* If frame->local is null do nothing*/
-        if (!frame->local) {
-               goto error;
-        }
-
         /*If create has failed then nothing to do*/
         if (op_ret == -1) {
-               goto error;
+               goto out;
         }
-        wr_local_create = (wr_local_create_t*) frame->local;
 
-        /*Saving current create fop's context on to frame->local*/
-        wr_local_create->op_ret = op_ret;
-        wr_local_create->op_errno = op_errno;
-        wr_local_create->fd = fd;
-        wr_local_create->inode = inode;
-        wr_local_create->stbuf = stbuf;
-        wr_local_create->preparent = preparent;
-        wr_local_create->postparent = postparent;
-
-        /*Setting atime of the file to xattr*/
         dict = dict_new ();
         if (!dict) {
-              goto error;
+              goto out;
         }
 
         ret = dict_set_int8 (dict, "trusted.worm_state", worm_state);
-
         if (ret) {
                gf_log (this->name , GF_LOG_ERROR , "Failed setting worm_state!");
-               goto error;
+               goto out;
         }
 
-        STACK_WIND (frame, wr_setxattr_cbk,
-                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetxattr, fd,
-                    dict, 0, xdata);
+        ret = syncop_fsetxattr (this, fd, dict, 0, NULL, NULL);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR, "fsetxattr failed to set worm-state\n");
+                goto out;
+        }
+
         ret = 0;
-        goto out;
-error:
-        STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode,
-                        stbuf, preparent, postparent, xdata);
 out:
         if (dict)
-            dict_unref (dict); 
+            dict_unref (dict);
 
-        if (wr_local_create) {
-                GF_FREE (wr_local_create);
-        }
-
-        frame->local = NULL;
+        STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode,
+                        stbuf, preparent, postparent, xdata);
         return ret;
 }
+
+
 
 int32_t
 wr_create(call_frame_t *frame, xlator_t *this,
@@ -253,29 +301,17 @@ wr_create(call_frame_t *frame, xlator_t *this,
             mode_t umask, fd_t *fd, dict_t *xdata) {
 
         int ret = -1;
-        wr_local_create_t *wr_local_create = NULL;
-        wr_local_create = GF_CALLOC (1, sizeof (wr_local_create_t), gf_wr_mt_local_create_t);
+        wr_in_create_t *st_crt;
 
-        if (!wr_local_create) {
-
-               gf_log (this->name , GF_LOG_ERROR , "failed init of local of create fop!");
-               goto error;
-        }
-
-        ret = 0;
-        goto out;
-
-error:
-        if (wr_local_create)
-                GF_FREE (wr_local_create);
-        wr_local_create = NULL;
-
-out:
-        frame->local = wr_local_create;
+        st_crt = GF_CALLOC (1, sizeof (wr_in_create_t), 0);
+        st_crt->crt_flag = 1;
+        frame->local = st_crt;
 
         STACK_WIND (frame, wr_create_cbk, FIRST_CHILD (this),
                     FIRST_CHILD (this)->fops->create,
                     loc, flags, mode, umask, fd, xdata);
+        ret = 0;
+        st_crt->crt_flag = 0;
         return ret;
 }
 
@@ -318,7 +354,6 @@ out:
         return ret;
 }
 
-
 void
 fini (xlator_t *this)
 {
@@ -335,7 +370,10 @@ fini (xlator_t *this)
 
 struct xlator_fops fops = {
         .create       = wr_create,
-        .writev       = wr_writev
+        .writev       = wr_writev,
+        .setxattr     = wr_setxattr,
+        .fsetxattr    = wr_fsetxattr
+        .setattr      = wr_setattr,
 };
 
 struct xlator_cbks cbks;
